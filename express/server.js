@@ -1,34 +1,55 @@
 const express = require("express");
 const mysql = require("mysql2");
 const dotenv = require("dotenv");
-const Ajv = require("ajv");
-const addFormats = require("ajv-formats");
+const jwt = require("jsonwebtoken");
+const cors = require("cors"); // CORS hinzufügen
+const { validatePerson } = require("./validation/personSchema");
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
+const SECRET_KEY = "your_secret_key"; // Geheimschlüssel für das Token
 
-const ajv = new Ajv();
-addFormats(ajv); // Aktiviert Formate wie "email"
+// 🌐 CORS aktivieren
+app.use(cors());
 
-// Schema für /person PUT oder POST
-const personSchema = {
-    type: "object",
-    properties: {
-        vorname: { type: "string" },
-        nachname: { type: "string" },
-        plz: { type: "string" },
-        strasse: { type: "string" },
-        ort: { type: "string" },
-        telefonnummer: { type: "string" },
-        email: { type: "string", format: "email" }
-    },
-    required: ["vorname", "nachname", "telefonnummer", "email"],
-    additionalProperties: false
+// 🧠 JSON-Parser + Fehler abfangen, wenn kein gültiges JSON
+app.use(express.json({
+    verify: (req, res, buf) => {
+        try {
+            JSON.parse(buf);
+        } catch (e) {
+            throw new Error("INVALID_JSON");
+        }
+    }
+}));
+
+// Globaler Error-Handler für ungültiges JSON
+app.use((err, req, res, next) => {
+    if (err.message === "INVALID_JSON") {
+        return res.status(400).json({
+            errorCode: "BODY_NOT_JSON",
+            message: "Body ist nicht im JSON-Format"
+        });
+    }
+    next(err);
+});
+
+// Middleware zur Authentifizierung (Token-Check)
+const authenticateToken = (req, res, next) => {
+    const token = req.header("Authorization")?.split(" ")[1]; // Holen des Tokens aus dem Header
+
+    if (!token) return res.status(401).send("Token fehlt!");
+
+    jwt.verify(token, SECRET_KEY, (err, user) => {
+        if (err) return res.status(403).send("Token ungültig oder abgelaufen!");
+        req.user = user;
+        next(); // Weiter zu der nächsten Middleware oder Route
+    });
 };
-const validatePerson = ajv.compile(personSchema);
 
+// MySQL-Datenbankverbindung
 const pool = mysql.createPool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
@@ -40,61 +61,34 @@ const pool = mysql.createPool({
     queueLimit: 0
 });
 
-app.use(express.json());
+// Login-Route (Token erhalten)
+app.post("/login", (req, res) => {
+    const { username, password } = req.body;
 
-// Route: GET /hello?name=Max
-app.get("/hello", (req, res) => {
-    const name = req.query.name;
-    if (!name) return res.status(400).send("Name fehlt");
-
-    pool.query(
-        "INSERT INTO greetings (name, source) VALUES (?, ?)",
-        [name, "query"],
-        (err) => {
-            if (err) return res.status(500).send("Fehler beim Einfügen in die DB");
-            res.send("hallo mein query ist: " + name);
-        }
-    );
+    // Dummy-Login mit festen Werten (ändern für echten Login)
+    if (username === "admin" && password === "password") {
+        // Token generieren
+        const token = jwt.sign({ username }, SECRET_KEY, { expiresIn: "1h" });
+        res.json({ token });
+    } else {
+        res.status(401).send("Ungültige Anmeldedaten");
+    }
 });
 
-// Route: GET /hello/Max
-app.get("/hello/:name", (req, res) => {
-    const name = req.params.name;
-
-    pool.query(
-        "INSERT INTO greetings (name, source) VALUES (?, ?)",
-        [name, "param"],
-        (err) => {
-            if (err) return res.status(500).send("Fehler beim Einfügen in die DB");
-            res.send("hallo mein Name ist auch " + name);
-        }
-    );
+// Beispielroute (geschützt mit Token) – muss authentifiziert werden
+app.get("/protected", authenticateToken, (req, res) => {
+    res.status(200).send("Dies ist eine geschützte Route, du bist authentifiziert!");
 });
 
-// Route: POST /hello/body mit JSON
-app.post("/hello/body", (req, res) => {
-    const { name } = req.body;
-    if (!name) return res.status(400).send("JSON muss ein 'name'-Feld enthalten");
-
-    pool.query(
-        "INSERT INTO greetings (name, source) VALUES (?, ?)",
-        [name, "body"],
-        (err) => {
-            if (err) return res.status(500).send("Fehler beim Einfügen in die DB");
-            res.send({ message: "Name gespeichert", name });
-        }
-    );
-});
-
-// POST /person mit JSON-Schema-Validierung
-app.post("/person", (req, res) => {
+// Personen hinzufügen – JSON-Validierung und Authentifizierung
+app.post("/person", authenticateToken, (req, res) => {
     const person = req.body;
 
     const valid = validatePerson(person);
     if (!valid) {
         return res.status(400).json({
             message: "Falsches JSON-Format",
-            errors: validatePerson.errors
+            errors: validatePerson.errors,
         });
     }
 
@@ -114,8 +108,8 @@ app.post("/person", (req, res) => {
     });
 });
 
-// PUT /person/:id – Person aktualisieren mit JSON-Validierung
-app.put("/person/:id", (req, res) => {
+// Personen aktualisieren – JSON-Validierung und Authentifizierung
+app.put("/person/:id", authenticateToken, (req, res) => {
     const { id } = req.params;
     const person = req.body;
 
@@ -123,7 +117,7 @@ app.put("/person/:id", (req, res) => {
     if (!valid) {
         return res.status(400).json({
             message: "Falsches JSON-Format",
-            errors: validatePerson.errors
+            errors: validatePerson.errors,
         });
     }
 
@@ -147,16 +141,16 @@ app.put("/person/:id", (req, res) => {
     });
 });
 
-// GET /person – alle Personen
-app.get("/person", (req, res) => {
+// Personen abrufen (alle) – Authentifizierung
+app.get("/person", authenticateToken, (req, res) => {
     pool.query("SELECT * FROM personen", (err, results) => {
         if (err) return res.status(500).send("Fehler beim Abrufen der Personen");
         res.status(200).json(results);
     });
 });
 
-// GET /person/:id – eine Person
-app.get("/person/:id", (req, res) => {
+// Einzelperson abrufen – Authentifizierung
+app.get("/person/:id", authenticateToken, (req, res) => {
     const { id } = req.params;
 
     pool.query("SELECT * FROM personen WHERE id = ?", [id], (err, result) => {
@@ -166,8 +160,8 @@ app.get("/person/:id", (req, res) => {
     });
 });
 
-// DELETE /person/:id
-app.delete("/person/:id", (req, res) => {
+// Person löschen – Authentifizierung
+app.delete("/person/:id", authenticateToken, (req, res) => {
     const { id } = req.params;
 
     pool.query("DELETE FROM personen WHERE id = ?", [id], (err, result) => {
@@ -178,5 +172,5 @@ app.delete("/person/:id", (req, res) => {
 });
 
 app.listen(port, () => {
-    console.log(`Server läuft unter http://localhost:${port}`);
+    console.log(`Server läuft auf http://localhost:${port}`);
 });
