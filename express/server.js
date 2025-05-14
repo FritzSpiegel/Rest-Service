@@ -1,15 +1,14 @@
 const express = require("express");
 const mysql = require("mysql2");
 const dotenv = require("dotenv");
-const jwt = require("jsonwebtoken");
-const cors = require("cors"); // CORS hinzufügen
+const cors = require("cors");
 const { validatePerson } = require("./validation/personSchema");
+const userRoutes = require("./routes/users"); // 👈 neue Benutzer-Route
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
-const SECRET_KEY = "your_secret_key"; // Geheimschlüssel für das Token
 
 // 🌐 CORS aktivieren
 app.use(cors());
@@ -36,20 +35,22 @@ app.use((err, req, res, next) => {
     next(err);
 });
 
-// Middleware zur Authentifizierung (Token-Check)
-const authenticateToken = (req, res, next) => {
-    const token = req.header("Authorization")?.split(" ")[1]; // Holen des Tokens aus dem Header
+// 🔐 Middleware zur Authentifizierung (Token-Check)
+const jwt = require("jsonwebtoken");
+const SECRET_KEY = process.env.JWT_SECRET || "your_secret_key";
 
+const authenticateToken = (req, res, next) => {
+    const token = req.header("Authorization")?.split(" ")[1];
     if (!token) return res.status(401).send("Token fehlt!");
 
     jwt.verify(token, SECRET_KEY, (err, user) => {
         if (err) return res.status(403).send("Token ungültig oder abgelaufen!");
         req.user = user;
-        next(); // Weiter zu der nächsten Middleware oder Route
+        next();
     });
 };
 
-// MySQL-Datenbankverbindung
+// 🛢️ MySQL-Datenbankverbindung
 const pool = mysql.createPool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
@@ -61,26 +62,10 @@ const pool = mysql.createPool({
     queueLimit: 0
 });
 
-// Login-Route (Token erhalten)
-app.post("/login", (req, res) => {
-    const { username, password } = req.body;
+// 📦 Benutzer-Routen laden
+app.use("/", userRoutes);
 
-    // Dummy-Login mit festen Werten (ändern für echten Login)
-    if (username === "admin" && password === "password") {
-        // Token generieren
-        const token = jwt.sign({ username }, SECRET_KEY, { expiresIn: "1h" });
-        res.json({ token });
-    } else {
-        res.status(401).send("Ungültige Anmeldedaten");
-    }
-});
-
-// Beispielroute (geschützt mit Token) – muss authentifiziert werden
-app.get("/protected", authenticateToken, (req, res) => {
-    res.status(200).send("Dies ist eine geschützte Route, du bist authentifiziert!");
-});
-
-// Personen hinzufügen – JSON-Validierung und Authentifizierung
+// ➕ Person hinzufügen
 app.post("/person", authenticateToken, (req, res) => {
     const person = req.body;
 
@@ -108,7 +93,7 @@ app.post("/person", authenticateToken, (req, res) => {
     });
 });
 
-// Personen aktualisieren – JSON-Validierung und Authentifizierung
+// ✏️ Person aktualisieren
 app.put("/person/:id", authenticateToken, (req, res) => {
     const { id } = req.params;
     const person = req.body;
@@ -141,7 +126,7 @@ app.put("/person/:id", authenticateToken, (req, res) => {
     });
 });
 
-// Personen abrufen (alle) – Authentifizierung
+// 📋 Alle Personen abrufen
 app.get("/person", authenticateToken, (req, res) => {
     pool.query("SELECT * FROM personen", (err, results) => {
         if (err) return res.status(500).send("Fehler beim Abrufen der Personen");
@@ -149,7 +134,7 @@ app.get("/person", authenticateToken, (req, res) => {
     });
 });
 
-// Einzelperson abrufen – Authentifizierung
+// 🔍 Einzelne Person abrufen
 app.get("/person/:id", authenticateToken, (req, res) => {
     const { id } = req.params;
 
@@ -160,7 +145,7 @@ app.get("/person/:id", authenticateToken, (req, res) => {
     });
 });
 
-// Person löschen – Authentifizierung
+// ❌ Person löschen
 app.delete("/person/:id", authenticateToken, (req, res) => {
     const { id } = req.params;
 
@@ -171,6 +156,7 @@ app.delete("/person/:id", authenticateToken, (req, res) => {
     });
 });
 
+// 🚀 Server starten
 app.listen(port, () => {
     console.log(`Server läuft auf http://localhost:${port}`);
 });
